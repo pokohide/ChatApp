@@ -1,0 +1,282 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>     // for errno
+#include <unistd.h>    // for close
+#include <arpa/inet.h> // for inet_addr
+#include <sys/types.h>
+#include <sys/time.h>
+#include <sys/socket.h>
+#include <regex.h>
+#include <netinet/in.h>
+
+#define PORT 59630
+#define MAX 1024
+#define Boolean int
+#define TRUE 1
+#define FALSE 0
+
+#define RED "\x1b[31m"
+#define GREEN "\x1b[32m"
+#define YELLOW "\x1b[33m"
+#define BLUE "\x1b[34m"
+#define PINK "\x1b[35m"
+#define DEFAULT "\x1b[39m"
+
+char handleName[32];
+
+typedef struct {
+  char name[32];  // 名前
+  char *color; // 色
+} User;
+
+User user = {"pokohide", RED};
+
+/*
+ * @function Chomp
+ * @detail 文字列終端の改行コードを削除する
+ * @param {*char} str 文字列
+*/
+void Chomp(char *str) {
+  int len = strlen(str);
+  if((len > 0) && (str[len - 1] == '\n')) {
+    str[len-1] = '\0';
+  }
+  return;
+}
+
+/*
+ * @function CreateSocket
+*/
+int CreateSocket() {
+  int fd = socket(PF_INET, SOCK_STREAM, 0);
+  if(fd < 0) {
+    perror("Failed to create socket");
+    exit(close(fd));
+  }
+  return fd;
+}
+
+void InitAddr(struct sockaddr_in *addr, char *ip, int port) {
+  bzero( (char *)addr, sizeof(*addr) );
+  (*addr).sin_family = PF_INET;
+  (*addr).sin_addr.s_addr = inet_addr(ip);
+  (*addr).sin_port = htons(port);
+}
+
+/*
+ * @function CanIRecv
+ * @detail 監視する
+ * @param {int} fd ソケットID
+ * @return {Boolean} TRUE(データあり) or FALSE(データなし)
+*/
+Boolean CanIRecv(int fd) {
+  fd_set fdset;
+  struct timeval timeout = {0, 100};
+  FD_ZERO(&fdset);
+  FD_SET(fd, &fdset);
+  return select(fd+1, &fdset, NULL, NULL, &timeout) ? TRUE : FALSE;
+}
+
+/*
+ * @function TransmitterReceiver
+ * @detail メッセージの送受信部
+ * @param {int} fd ソケットID
+*/
+void TransmitterReceiver(int fd) {
+  while(1) {
+    if(CanIRecv(0) == TRUE) {
+      if(TransmissionPart(fd) == FALSE) break;
+    } else if(CanIRecv(fd) == TRUE) {
+      if(ReceivingPart(fd) == FALSE) break;
+     }
+  }
+
+  /* ソケット切断 */
+  exit(close(fd));
+}
+
+/*
+ * @function TransmissionPart
+ * @detail メッセージの送信部
+ * @param {int} ソケットID
+ * @return {Boolean} TRUE(成功) or FALSE(失敗)
+*/
+Boolean TransmissionPart(int fd) {
+  int buflen, res = 0;
+  char buf[MAX];
+  char formatted[MAX];
+
+  buflen = read(0, buf, sizeof(buf) - 1);
+  buf[buflen] = '\0';
+
+  /* quitで終了 */
+  if(strcmp(buf, "quit\n") == 0) {
+    return FALSE;
+  }
+
+  /* 改行削除 */
+  Chomp(buf);
+
+  printf("\x1b[1A");
+  printf("\r%s  %s...送信完了%s", buf, RED, DEFAULT);
+  printf("\x1b[1B");
+  printf("\r");
+
+  // バッファがあふれた場合に空になるまで送信する。
+  while(buflen > 0) {
+    sprintf(formatted, "%s:: %s", user.name, buf);
+    res = write(fd, formatted, buflen + strlen(user.name) + 3);
+
+    if(res < 0) {
+      return FALSE;
+    }
+    buflen -= res;
+  }
+
+  return TRUE;
+}
+
+/*
+ * @function DisplayMessage
+ * @detailt 受け取ったメッセージから名前と内容を抽出して表示
+*/
+void DisplayMessage(char *message) {
+  regex_t preg;
+  size_t nmatch = 3;
+  regmatch_t pmatch[nmatch];
+  int i, j;
+
+  Chomp(message);
+
+  if (regcomp(&preg, "(.+):: (.*)$", REG_EXTENDED|REG_NEWLINE) != 0) {
+    printf("regex compile failed.\n");
+    exit(1);
+  }
+
+  if (regexec(&preg, message, nmatch, pmatch, 0) != 0) {
+    printf("[ROOM]: %s\n", message);
+  } else {
+    // 名前
+    if (pmatch[1].rm_so >= 0 && pmatch[1].rm_eo >= 0) {
+      printf("%s[", user.color);
+      for (j = pmatch[1].rm_so ; j < pmatch[1].rm_eo; j++) {
+         putchar(message[j]);
+        }
+      printf("]%s: ", DEFAULT);
+     }
+
+    // 内容
+    if (pmatch[2].rm_so >= 0 && pmatch[2].rm_eo >= 0) {
+      for (j = pmatch[2].rm_so ; j < pmatch[2].rm_eo; j++) {
+         putchar(message[j]);
+        }
+     }
+    printf("\n");
+  }
+  fflush(stdout);
+  regfree(&preg);
+  return;
+}
+
+/*
+ * @function ReceivingPart
+ * @detail メッセージの受信部
+ * @param {int} ソケットID
+ * @return {Boolean} TRUE(成功) or FALSE(失敗)
+*/
+Boolean ReceivingPart(int fd) {
+  int buflen = 0;
+  char buf[MAX];
+
+  while(1) {
+    buflen = recv(fd, buf, sizeof(buf), 0);
+    if( errno != EINTR ) break;
+  }
+  if(buflen == 0) return FALSE;
+  if(buflen < 0) return FALSE;
+  if(buflen > 0) {
+    DisplayMessage(buf);
+    //printf("%s[%s]%s:%s\n", user.color, user.name, DEFAULT, buf);
+  }
+
+  return TRUE;
+}
+
+int Random(int min, int max) {
+  return min + (int)(rand() * (max-min+1.0) / (1.0+RAND_MAX));
+}
+
+/*
+ * @function SetUser
+ * @detail ユーザをセット
+*/
+void InitUser() {
+  printf("ハンドルネーム: ");
+  scanf("%s", &user.name);
+  switch(Random(0, 4)) {
+    case 0:
+      user.color = RED;
+      break;
+    case 1:
+      user.color = GREEN;
+      break;
+    case 2:
+      user.color = YELLOW;
+      break;
+    case 3:
+      user.color = BLUE;
+      break;
+    case 4:
+      user.color = PINK;
+      break;
+    default:
+      user.color = PINK;
+      break;
+  }
+  Chomp(user.name);
+  return;
+}
+
+
+/*-----------------------------------------------
+
+
+  -----------------------------------------------*/
+int main(int argc, char *argv[]) {
+  struct sockaddr_in addr;
+  fd_set readfds;
+  int fd;
+
+  if(argc != 2) {
+    fprintf(stderr, "Usage: %s <IP Address>\n", argv[0]);
+    exit(1);
+  }
+
+  InitUser();
+
+  /* ソケット作成 */
+  fd = CreateSocket();
+
+  /* ソケットの設定  */
+  InitAddr(&addr, argv[1], PORT);
+
+  /* ソケットの接続要求 */
+  if(connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    perror("Failed to connect server");
+    exit(close(fd));
+  }
+  printf("チャットルームに参加しました。\n");
+  printf("'quit'と入力すると退出できます。\n");
+
+  /* ユーザ名を送信 */
+  write(fd, user.name, strlen(user.name));
+
+  FD_ZERO(&readfds);
+  FD_SET(fd, &readfds);
+
+  /* データの送受信 */
+  TransmitterReceiver(fd);
+  return 0;
+}
+

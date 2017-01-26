@@ -1,0 +1,188 @@
+/*
+ * chat_server.c
+ */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+
+#define PORT 50002  /* ポート番号 */
+
+#define FILENAME "log.txt"
+
+void Request(int connected_fd);
+void WriteFile(char *str);
+int main( void ) {
+  int    i;
+  int    connected_fd, listening_fd;
+  struct sockaddr_in server_addr;
+  struct sockaddr_in client_addr;
+  int    len, buflen;
+  char   buf[1024];
+
+
+
+  /* リスニングソケット作成 */
+  if ( ( listening_fd = socket(PF_INET, SOCK_STREAM, 0) ) < 0 ) {
+    perror("db:*** server: socket ***");
+    exit(1);
+  }
+
+  /* アドレスファミリ・ポート番号・IPアドレス設定 */
+  bzero( (char *)&server_addr, sizeof(server_addr) );
+  server_addr.sin_family = PF_INET;
+  server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  server_addr.sin_port = htons(PORT);
+
+  /* リスニングソケットにアドレスを割り当て */
+  if ( bind( listening_fd, (struct sockaddr *)&server_addr, 
+         sizeof(server_addr) ) < 0 ) {
+    perror("db:*** server: bind ***");
+    close(listening_fd);
+    exit(1);
+  }
+    
+  /* リスニングソケット待ち受け */
+  if ( listen( listening_fd, 1 ) < 0 ) {
+    perror("db:*** server: listen ***");
+    close(listening_fd);
+    exit(1);
+  }
+  printf( "db:Waiting for connections from a client.\n" );
+
+  /* 接続要求受け付け */
+  len = sizeof(client_addr);
+  if ( ( connected_fd = accept(listening_fd, 
+         (struct sockaddr *)&client_addr, &len) ) < 0 ) {
+    perror("db:*** server: accept ***");
+    close(listening_fd);
+    exit(1);
+  }
+  close(listening_fd);
+  printf( "db:Accepted connection.\n" );
+
+
+  //書き込みファイルの初期化
+  FILE *fp = fopen(FILENAME,"w");
+  fclose(fp);
+
+
+  /* データの送受信 */
+  while (1) {/*受信するが文字列長が0以下であったら終了*/
+    if ( ( buflen = read( connected_fd, buf, sizeof(buf) ) ) <= 0 ) {
+      break;
+    }
+
+    //一応末尾にnull文字を入れる
+    buf[buflen] = '\0';
+
+    printf( "db:>>> Received\n", buflen );
+    printf("db:%s\n",buf);
+
+    //REQUEST要請が来た場合
+    if(strcmp(buf,"REQUEST") == 0){
+      Request(connected_fd);
+    }
+
+    //書き込み要請が来た場合
+    else{
+      //ファイルへの書き込み
+      printf("db:Writing to Log file...\n");
+      WriteFile(buf);
+    }    
+  }
+  /* ソケット切断 */
+  exit( close(connected_fd) );
+}
+
+//ファイルの内容を全出力、引数の文字列に格納しこれを返す
+//読み込み先ファイル名はdefineで
+void Request(int connected_fd){
+
+  FILE *fp = fopen(FILENAME,"r");
+  long int size;
+
+  //ファイルが開けなかった場合
+  if(fp == NULL){
+    printf("db:LogData is not exit\n");
+    fclose(fp);
+    return;  
+  }
+  
+  //1行ずつ送信
+  char *data;  
+  fseek(fp,0,SEEK_END);
+  size = ftell(fp);
+
+  if(size == 0){
+    char *temp = "no data"; 
+    write(connected_fd,temp,sizeof(temp));
+    return;
+  }
+
+  fseek(fp,0,SEEK_SET);
+
+  char buf[1024];
+  char temp1[] = "-----------過去ログ-----------";
+  char temp2[] = "-----------ここまで-----------";
+  char end[] = "END";  
+
+  printf("db:<<< Log data sending\n");
+
+  write(connected_fd,temp1,strlen(temp1));
+  while(fgets(buf,sizeof(buf),fp) != NULL){
+
+    printf("db:%s",buf);    
+    write(connected_fd,buf,strlen(buf));
+   
+    usleep(10000);
+  }
+  write(connected_fd,temp2,strlen(temp2));
+  usleep(100000);
+  write(connected_fd,end,strlen(end));
+
+  //一度にまとめて送信
+  /*
+  data = (unsigned char*) malloc(sizeof(unsigned char *)*size);
+
+  fseek(fp,0,SEEK_SET);
+  fread(data,sizeof(unsigned char),size,fp);
+
+  //ログの送信の際にLOG Begin 本文 LOG Endを付け足す
+  
+  char *sendData;  
+  sendData = (unsigned char*) malloc(sizeof(unsigned char *)*(sizeof(data) + sizeof(temp1) + sizeof(temp2)));
+  sprintf(sendData,"%s%s%s",temp1,data,temp2);
+  
+  //送信
+  printf("db:<<< Log data sending\n");
+  write(connected_fd,sendData,strlen(sendData));
+
+  free(sendData);
+  free(data);
+  */  
+  fclose(fp);
+  return;
+}
+
+//書き込みたい内容を引数に、書き込み先ファイル名はdefineで
+void WriteFile(char *str){
+  //追加書き込み
+  FILE *fp = fopen(FILENAME,"a+");
+
+  //エラーチェック
+  if(fp == NULL){
+    printf("db:Log writing error\n");
+    return;  
+  }
+  //書き込み
+  fprintf(fp,"%s",str);
+  fprintf(fp,"\n");
+
+//ファイルのクローズ
+  fclose(fp);
+  return;
+}
